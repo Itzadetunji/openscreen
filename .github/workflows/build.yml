@@ -308,11 +308,27 @@ jobs:
             IS_PRERELEASE="false"
           fi
 
+          # Compute the previous stable tag for auto-generated release notes. We don't use
+          # GitHub's "most recent prior release by date" because the fork carries re-published
+          # upstream releases whose published_at is more recent than the fork's own first release.
+          # For SemVer X.Y.Z: previous is vX.Y.(Z-1) if Z>0, else vX.(Y-1).0, else v(X-1).0.0.
+          STABLE_VERSION="${VERSION%%-*}"
+          IFS='.' read -r PX PY PZ <<< "$STABLE_VERSION"
+          if (( PZ > 0 )); then
+            NOTES_START_TAG="v${PX}.${PY}.$((PZ - 1))"
+          elif (( PY > 0 )); then
+            NOTES_START_TAG="v${PX}.$((PY - 1)).0"
+          else
+            NOTES_START_TAG="v$((PX - 1)).0.0"
+          fi
+          echo "Computed notes_start_tag=${NOTES_START_TAG} for tag=${TAG}"
+
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "stable_version=$STABLE_VERSION" >> "$GITHUB_OUTPUT"
           echo "is_prerelease=$IS_PRERELEASE" >> "$GITHUB_OUTPUT"
           echo "prerelease_flag=$PRERELEASE_FLAG" >> "$GITHUB_OUTPUT"
+          echo "notes_start_tag=$NOTES_START_TAG" >> "$GITHUB_OUTPUT"
 
       - name: Download Windows installer
         uses: actions/download-artifact@v4
@@ -345,6 +361,7 @@ jobs:
           GH_TOKEN: ${{ secrets.OPENSCREEN_RELEASE_TOKEN }}
           TAG: ${{ steps.release.outputs.tag }}
           PRERELEASE_FLAG: ${{ steps.release.outputs.prerelease_flag }}
+          NOTES_START_TAG: ${{ steps.release.outputs.notes_start_tag }}
         run: |
           mapfile -t FILES < <(find artifacts -type f | sort)
           if [[ "${#FILES[@]}" -eq 0 ]]; then
@@ -355,11 +372,17 @@ jobs:
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "${FILES[@]}" --clobber
           else
+            # --notes-start-tag controls which previous tag GitHub compares against
+            # when auto-generating the release notes. Default behaviour (most recent
+            # prior release by date) doesn't work for this fork because the v1.4.0
+            # release in the fork was re-published after v1.5.0, which makes GitHub
+            # pick v1.4.0 as the "previous" for any v1.5.x release.
             # shellcheck disable=SC2086
             gh release create "$TAG" "${FILES[@]}" \
               --target "$GITHUB_SHA" \
               --title "$TAG" \
               --generate-notes \
+              --notes-start-tag "$NOTES_START_TAG" \
               $PRERELEASE_FLAG
           fi
 
